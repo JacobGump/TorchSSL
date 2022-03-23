@@ -1,13 +1,15 @@
 import torch
 
 from .data_utils import split_ssl_data, sample_labeled_data
-from .dataset import BasicDataset
+from .dataset import BasicDataset, CustomCifar10
 from collections import Counter
 import torchvision
 import numpy as np
 from torchvision import transforms
 import json
 import os
+import pandas as pd
+import cv2
 
 import random
 from .augmentation.randaugment import RandAugment
@@ -28,12 +30,14 @@ mean['cifar100'] = [x / 255 for x in [129.3, 124.1, 112.4]]
 mean['svhn'] = [0.4380, 0.4440, 0.4730]
 mean['stl10'] = [x / 255 for x in [112.4, 109.1, 98.6]]
 mean['imagenet'] = [0.485, 0.456, 0.406]
+mean['custom'] = mean['cifar10']
 
 std['cifar10'] = [x / 255 for x in [63.0, 62.1, 66.7]]
 std['cifar100'] = [x / 255 for x in [68.2, 65.4, 70.4]]
 std['svhn'] = [0.1751, 0.1771, 0.1744]
 std['stl10'] = [x / 255 for x in [68.4, 66.6, 68.5]]
 std['imagenet'] = [0.229, 0.224, 0.225]
+std['custom'] = std['cifar10']
 
 
 def accimage_loader(path):
@@ -176,6 +180,45 @@ class ImageNetLoader:
         data = ImagenetDataset(root=os.path.join(self.root_path, "val"), transform=transform, ulb=False)
         return data
 
+class CustomDataset:
+    def __init__(self, data_dir, num_labels = 10):
+        self.data_dir = data_dir 
+        self.num_labels = num_labels 
+    
+    def get_lb_data(self):
+        df = pd.read_csv(os.path.join(self.data_dir, 'clean_labels.csv'))
+        target = df.values
+        length = df.shape[0]
+        img_list = [i for i in os.walk(os.path.join(self.data_dir, 'images'))][0][2]
+        img_list.sort()
+        data = np.zeros(length * 32 * 32 * 3).reshape(length, 32, 32, 3)
+        for i, img in enumerate(img_list):
+            if i >= length:
+                break
+            img_path = os.path.join(self.data_dir, "images", img)
+            image = cv2.imread(img_path)
+            data[i] = image 
+        return data, target
+    
+    def get_ulb_data(self):
+        df = pd.read_csv(os.path.join(self.data_dir, 'noisy_labels.csv'))
+        target = df.values
+        length = df.shape[0]
+        img_list = [i for i in os.walk(os.path.join(self.data_dir, 'images'))][0][2]
+        img_list.sort()
+        data = np.zeros(length * 32 * 32 * 3).reshape(length, 32, 32, 3)
+        for i, img in enumerate(img_list):
+            if i < length:
+                continue
+            img_path = os.path.join(self.data_dir, "images", img)
+            image = cv2.imread(img_path)
+            data[i] = image 
+        return data, target
+
+    def get_dset(self):
+        lb_data, target = self.get_lb_data
+        ulb_data, utarget = self.get_ulb_data 
+        return lb_data, target, ulb_data, utarget
 
 def get_transform(mean, std, crop_size, train=True):
     if train:
@@ -255,6 +298,11 @@ class SSL_Dataset:
             data, targets = dset_lb.data.transpose([0, 2, 3, 1]), dset_lb.labels.astype(np.int64)
             ulb_data = dset_ulb.data.transpose([0, 2, 3, 1])
             return data, targets, ulb_data
+        
+        elif self.name.upper() == 'CUSTOM':
+            custom_db = CustomDataset(self.data_dir)
+            lb_data, target, ulb_data, utarget = custom_db.get_dset()
+            return ulb_data, utarget
 
     def get_dset(self, is_ulb=False,
                  strong_transform=None, onehot=False):
@@ -306,6 +354,9 @@ class SSL_Dataset:
                 ulb_data = np.concatenate([ulb_data, lb_data], axis=0)
             lb_data, lb_targets, _ = sample_labeled_data(self.args, lb_data, lb_targets, num_labels, self.num_classes)
             ulb_targets = None
+        elif self.name.upper() == 'CUSTOM':
+            custom_db = CustomDataset(self.data_dir)
+            lb_data, lb_targets, ulb_data, ulb_targets = custom_db.get_dset()
         else:
             data, targets = self.get_data()
             lb_data, lb_targets, ulb_data, ulb_targets = split_ssl_data(self.args, data, targets,
@@ -326,11 +377,18 @@ class SSL_Dataset:
         with open(output_path, 'w') as w:
             json.dump(out, w)
         # print(Counter(ulb_targets.tolist()))
-        lb_dset = BasicDataset(self.alg, lb_data, lb_targets, self.num_classes,
-                               self.transform, False, None, onehot)
+        if self.name.upper == 'CUSTOM':
+            lb_dset = CustomCifar10(self.alg, lb_data, lb_targets, self.num_classes,
+                                self.transform, False, None, onehot)
 
-        ulb_dset = BasicDataset(self.alg, ulb_data, ulb_targets, self.num_classes,
-                                self.transform, True, strong_transform, onehot)
+            ulb_dset = CustomCifar10(self.alg, ulb_data, ulb_targets, self.num_classes,
+                                    self.transform, True, strong_transform, onehot)
+        else:
+            lb_dset = BasicDataset(self.alg, lb_data, lb_targets, self.num_classes,
+                                self.transform, False, None, onehot)
+
+            ulb_dset = BasicDataset(self.alg, ulb_data, ulb_targets, self.num_classes,
+                                    self.transform, True, strong_transform, onehot)
         # print(lb_data.shape)
         # print(ulb_data.shape)
         return lb_dset, ulb_dset
