@@ -191,7 +191,6 @@ def main_worker(gpu, ngpus_per_node, args):
                                 num_classes=args.num_classes, data_dir=args.data_dir)
         if args.dataset.upper() == "CUSTOM":
             lb_df = pd.read_csv(os.path.join(args.data_dir, "clean_labels.csv"))
-            lb_dset, ulb_dset = train_dset.get_ssl_dset(args.num_labels, index = [i for i in range(lb_df.shape[0])])
         else:
             lb_dset, ulb_dset = train_dset.get_ssl_dset(args.num_labels)
         _eval_dset = SSL_Dataset(args, alg='flexmatch', name=args.dataset, train=False,
@@ -209,23 +208,7 @@ def main_worker(gpu, ngpus_per_node, args):
     print("before dataloader init")
 
     loader_dict = {}
-    dset_dict = {'train_lb': lb_dset, 'train_ulb': ulb_dset, 'eval': eval_dset}
-
-    loader_dict['train_lb'] = get_data_loader(dset_dict['train_lb'],
-                                              args.batch_size,
-                                              data_sampler=args.train_sampler,
-                                              num_iters=args.num_train_iter,
-                                              num_workers=args.num_workers,
-                                              distributed=args.distributed)
-
-    loader_dict['train_ulb'] = get_data_loader(dset_dict['train_ulb'],
-                                               args.batch_size * args.uratio,
-                                               data_sampler=args.train_sampler,
-                                               num_iters=args.num_train_iter,
-                                               num_workers=4 * args.num_workers,
-                                               distributed=args.distributed)
-
-    loader_dict['eval'] = get_data_loader(dset_dict['eval'],
+    loader_dict['eval'] = get_data_loader(eval_dset,
                                           args.eval_batch_size,
                                           num_workers=args.num_workers,
                                           drop_last=False)
@@ -235,22 +218,25 @@ def main_worker(gpu, ngpus_per_node, args):
     ## set DataLoader and ulb_dset on FlexMatch
     model.set_data_loader(loader_dict)
 
-    model.set_dset(ulb_dset)
+    model.set_dset(eval_dset)
 
     # If args.resume, load checkpoints from args.load_path
-    if args.resume:
-        model.load_model(args.load_path)
+    model.load_model(args.load_path)
 
-    # START TRAINING of flexmatch
-    trainer = model.train
-    for epoch in range(args.epoch):
-        trainer(args, logger=logger)
+    y_pred = []
 
-    if not args.multiprocessing_distributed or \
-            (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-        model.save_model('latest_model.pth', save_path)
+    clean_lb = pd.DataFrame()
+    clean_lb["clean_label"] = pd.NaT
 
-    logging.warning(f"GPU {args.rank} training is FINISHED")
+    model.model.eval()
+    eval_loader = loader_dict['eval']
+    for _, x, y in eval_loader:
+        x, y = x.cuda(args.gpu), y.cuda(args.gpu)
+        logits = model.model(x)
+        y_pred.extend(torch.max(logits, dim=-1)[1].cpu().tolist())
+    for i, lb in enumerate(y_pred):
+        clean_lb = clean_lb.append({'clean_label': lb}, ignore_index=True)
+    clean_lb.to_csv("clean_label.csv")
 
 
 def str2bool(v):

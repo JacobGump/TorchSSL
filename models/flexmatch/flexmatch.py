@@ -80,7 +80,6 @@ class FlexMatch:
         self.scheduler = scheduler
 
     def train(self, args, logger=None):
-
         ngpus_per_node = torch.cuda.device_count()
 
         # EMA Init
@@ -101,6 +100,7 @@ class FlexMatch:
                 p_target = p_target.cuda(args.gpu)
             # print('p_target:', p_target)
 
+        print("in train after loading meta data")
         p_model = None
 
         # for gpu profiling
@@ -115,6 +115,7 @@ class FlexMatch:
         scaler = GradScaler()
         amp_cm = autocast if args.amp else contextlib.nullcontext
 
+        print("in train before eval")
         # eval for once to verify if the checkpoint is loaded correctly
         if args.resume == True:
             eval_dict = self.evaluate(args=args)
@@ -125,12 +126,13 @@ class FlexMatch:
 
         classwise_acc = torch.zeros((args.num_classes,)).cuda(args.gpu)
 
+        print("in train, before iter")
         for (_, x_lb, y_lb), (x_ulb_idx, x_ulb_w, x_ulb_s) in zip(self.loader_dict['train_lb'],
-                                                                  self.loader_dict['train_ulb']):
+                                                                  self.loader_dict['train_ulb']):                           
             # prevent the training iterations exceed args.num_train_iter
             if self.it > args.num_train_iter:
                 break
-
+                
             end_batch.record()
             torch.cuda.synchronize()
             start_run.record()
@@ -219,7 +221,9 @@ class FlexMatch:
                         (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
                     self.save_model('latest_model.pth', save_path)
 
+
             if self.it % self.num_eval_iter == 0:
+                print("evaluate")
                 eval_dict = self.evaluate(args=args)
                 tb_dict.update(eval_dict)
                 save_path = os.path.join(args.save_dir, args.save_name)
